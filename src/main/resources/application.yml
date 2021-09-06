@@ -1,0 +1,42 @@
+initializr:
+  javaVersions:
+    - id: 11
+      default: false
+    - id: 1.8
+      default: true
+  languages:
+    - name: Java
+      id: java
+      default: true
+    - name: Kotlin
+      id: kotlin
+      default: false
+  dependencies:
+    - name: Tech
+      content:
+        - name: Acme
+          id: acme
+          groupId: com.example.acme
+          artifactId: acme
+          version: 1.2.0.RELEASE
+          description: A solid description for this dependency
+  env:
+    boms:
+      cloud-bom:
+        groupId: com.example.foo
+        artifactId: acme-foo-dependencies
+        mappings:
+          - compatibilityRange: "[1.2.3.RELEASE,1.3.0.RELEASE)"
+            groupId: com.example.bar
+            artifactId: acme-foo-bom
+            version: Arcturus.SR6
+          - compatibilityRange: "[1.3.0.RELEASE,1.4.0.RELEASE)"
+            version: Botein.SR7
+          - compatibilityRange: "[1.4.0.RELEASE,1.5.x.RELEASE)"
+            version: Castor.SR6
+          - compatibilityRange: "[1.5.0.RELEASE,1.5.x.BUILD-SNAPSHOT)"
+            version: Diadem.RC1
+            repositories: spring-milestones
+          - compatibilityRange: "1.5.x.BUILD-SNAPSHOT"
+            version: Diadem.BUILD-SNAPSHOT
+            repositories: spring-snapshots,spring-milestones
