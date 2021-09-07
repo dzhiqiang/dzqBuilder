@@ -218,6 +218,7 @@ public class ServiceApplication {
    public static void main(String[] args) {
       SpringApplication.run(ServiceApplication.class, args);
    }
+   // 基本信息更新策略
    @Bean
    SaganInitializrMetadataUpdateStrategy saganInitializrMetadataUpdateStrategy(RestTemplateBuilder restTemplateBuilder,
          ObjectMapper objectMapper) {
@@ -800,4 +801,380 @@ initializr:
 #### 7.1 缓存配置
 
 如果您使用了服务，您会注意到日志中有许多包含从`spring.io/project_metadata/spring-boot`获取Spring Boot 基本信息的日志。 为了避免过于频繁地检查最新的Spring Boot版本，您应该在服务上启用缓存。 如果您愿意使用JCache (JSR-107)实现，Spring Initializr有一些自动配置来应用适当的缓存。  
+
+### // TODO 文档未翻译完
+
+
+
+## 源码解读
+
+Spring Boot 自动配置
+
+### initializr-web
+
+#### InitializrAutoConfiguration
+
+```properties
+# 文件地址META-INF/spring.factories
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+io.spring.initializr.web.autoconfigure.InitializrAutoConfiguration
+```
+
+```java
+// application.yml 文件initializr是root标签
+@ConfigurationProperties(prefix = "initializr")
+public class InitializrProperties extends InitializrConfiguration
+    
+@JsonIgnore // 序列化忽略此属性
+/**
+  * Available Spring Boot versions.
+  * 可用的Spring Boot版本
+*/
+@JsonIgnore
+private final List<DefaultMetadataElement> bootVersions = new ArrayList<>();
+```
+
+```java
+// 讲解InitializrAutoConfiguration 提供的bean
+@Configuration
+@EnableConfigurationProperties(InitializrProperties.class) // 上面已经讲了
+public class InitializrAutoConfiguration {
+   // 用于生成临时文件，等待压缩
+   // ProjectDirectoryFactory 参数ProjectDescription
+   @Bean
+   @ConditionalOnMissingBean // 同类型只能有一个
+   public ProjectDirectoryFactory projectDirectoryFactory() {
+      return (description) -> Files.createTempDirectory("project-");
+   }
+   // 生成输出字符流的工厂
+   @Bean
+   @ConditionalOnMissingBean
+   public IndentingWriterFactory indentingWriterFactory() {
+      return IndentingWriterFactory.create(new SimpleIndentStrategy("\t"));
+   }
+
+   @Bean
+   @ConditionalOnMissingBean(TemplateRenderer.class)
+   // 读取配置文件，进行模板转换 mustache 模板
+   // 模板用法 https://www.cnblogs.com/df-fzh/p/5979093.html
+   public MustacheTemplateRenderer templateRenderer(Environment environment,
+         // 防止不存在CacheManager，没有不会报错，注入CacheManager
+         // 可选配置
+         ObjectProvider<CacheManager> cacheManager) {
+      return new MustacheTemplateRenderer("classpath:/templates",
+            determineCache(environment, cacheManager.getIfAvailable()));
+   }
+   
+   private Cache determineCache(Environment environment, CacheManager cacheManager) {
+      if (cacheManager != null) {
+         // Binder更容易的绑定对象，更容易转换成对象
+         // https://blog.csdn.net/u011357213/article/details/109360301
+         Binder binder = Binder.get(environment);
+         boolean cache = binder.bind("spring.mustache.cache", Boolean.class).orElse(true);
+         if (cache) {
+            return cacheManager.getCache("initializr.templates");
+         }
+      }
+      return new NoOpCache("templates");
+   }
+   // 基础信息提供bean
+   @Bean
+   @ConditionalOnMissingBean(InitializrMetadataProvider.class)
+   public InitializrMetadataProvider initializrMetadataProvider(InitializrProperties properties,
+         // 可选配置
+         // 可以选择自动从spring服务获取最新的springboot版本
+         ObjectProvider<InitializrMetadataUpdateStrategy> initializrMetadataUpdateStrategy) {
+      // 从properties转到InitializrMetadataProvider中
+      InitializrMetadata metadata = InitializrMetadataBuilder.fromInitializrProperties(properties).build();
+      return new DefaultInitializrMetadataProvider(metadata,
+            initializrMetadataUpdateStrategy.getIfAvailable(() -> (current) -> current));
+   }
+   // 根据InitializrMetadata基本信息得到DependencyMetadata依赖的基本信息
+   @Bean
+   @ConditionalOnMissingBean
+   public DependencyMetadataProvider dependencyMetadataProvider() {
+      return new DefaultDependencyMetadataProvider();
+   }
+
+   /**
+    * Initializr web configuration.
+    * 初始化web配置
+    */
+   @Configuration
+   @ConditionalOnWebApplication
+   static class InitializrWebConfiguration {
+	  // 配置了ContentType类型
+      @Bean
+      InitializrWebConfig initializrWebConfig() {
+         return new InitializrWebConfig();
+      }
+	  // 项目生成
+      @Bean
+      @ConditionalOnMissingBean
+      ProjectGenerationController<ProjectRequest> projectGenerationController(
+            InitializrMetadataProvider metadataProvider, // 上文的基本信息提供者
+            ObjectProvider<ProjectRequestPlatformVersionTransformer> platformVersionTransformer, // 可选的
+            ApplicationContext applicationContext) {// bean上下文
+         // 项目生成调用者
+         ProjectGenerationInvoker<ProjectRequest> projectGenerationInvoker = new ProjectGenerationInvoker<>(
+               // bean上下文和DefaultProjectRequestToDescriptionConverter:把请求转换为ProjectDescription
+               // DefaultProjectRequestToDescriptionConverter 会进行转换，转换过程包含校验参数赋值，比较简单不在细讲
+               applicationContext, new DefaultProjectRequestToDescriptionConverter(platformVersionTransformer
+                     .getIfAvailable(DefaultProjectRequestPlatformVersionTransformer::new)));
+         return new DefaultProjectGenerationController(metadataProvider, projectGenerationInvoker);
+      }
+	  // 后面的Controller暂时不涉及，先以ProjectGenerationController举例
+      @Bean
+      @ConditionalOnMissingBean
+      ProjectMetadataController projectMetadataController(InitializrMetadataProvider metadataProvider,
+            DependencyMetadataProvider dependencyMetadataProvider) {
+         return new ProjectMetadataController(metadataProvider, dependencyMetadataProvider);
+      }
+
+      @Bean
+      @ConditionalOnMissingBean
+      CommandLineMetadataController commandLineMetadataController(InitializrMetadataProvider metadataProvider,
+            TemplateRenderer templateRenderer) {
+         return new CommandLineMetadataController(metadataProvider, templateRenderer);
+      }
+
+      @Bean
+      @ConditionalOnMissingBean
+      SpringCliDistributionController cliDistributionController(InitializrMetadataProvider metadataProvider) {
+         return new SpringCliDistributionController(metadataProvider);
+      }
+
+      @Bean
+      InitializrModule InitializrJacksonModule() {
+         return new InitializrModule();
+      }
+
+   }
+
+   /**
+    * Initializr cache configuration.
+    */
+   @Configuration
+   @ConditionalOnClass(javax.cache.CacheManager.class)
+   static class InitializrCacheConfiguration {
+
+      @Bean
+      JCacheManagerCustomizer initializrCacheManagerCustomizer() {
+         return new InitializrJCacheManagerCustomizer();
+      }
+
+   }
+
+   @Order(0)
+   private static class InitializrJCacheManagerCustomizer implements JCacheManagerCustomizer {
+
+      @Override
+      public void customize(javax.cache.CacheManager cacheManager) {
+         createMissingCache(cacheManager, "initializr.metadata",
+               () -> config().setExpiryPolicyFactory(CreatedExpiryPolicy.factoryOf(Duration.TEN_MINUTES)));
+         createMissingCache(cacheManager, "initializr.dependency-metadata", this::config);
+         createMissingCache(cacheManager, "initializr.project-resources", this::config);
+         createMissingCache(cacheManager, "initializr.templates", this::config);
+      }
+
+      private void createMissingCache(javax.cache.CacheManager cacheManager, String cacheName,
+            Supplier<MutableConfiguration<Object, Object>> config) {
+         boolean cacheExist = StreamSupport.stream(cacheManager.getCacheNames().spliterator(), true)
+               .anyMatch((name) -> name.equals(cacheName));
+         if (!cacheExist) {
+            cacheManager.createCache(cacheName, config.get());
+         }
+      }
+
+      private MutableConfiguration<Object, Object> config() {
+         return new MutableConfiguration<>().setStoreByValue(false).setManagementEnabled(true)
+               .setStatisticsEnabled(true);
+      }
+
+   }
+
+}
+```
+
+####  `/starter.zip`方法
+
+```java
+//ProjectGenerationController
+@RequestMapping("/starter.zip")
+public ResponseEntity<byte[]> springZip(R request) throws IOException {
+   // 重点讲解文件生成过程
+   // https://start.spring.io/#!type=maven-project&language=java&platformVersion=2.5.4&packaging=jar&jvmVersion=1.8&groupId=com.example&artifactId=demo&name=demo&description=Demo%20project%20for%20Spring%20Boot&packageName=com.example.demo&dependencies=lombok,web
+   ProjectGenerationResult result = this.projectGenerationInvoker.invokeProjectStructureGeneration(request);
+   // 生成zip文件
+   Path archive = createArchive(result, "zip", ZipArchiveOutputStream::new, ZipArchiveEntry::new,
+         ZipArchiveEntry::setUnixMode);
+   return upload(archive, result.getRootDirectory(), generateFileName(request, "zip"), "application/zip");
+}
+```
+
+生成文件
+
+```java
+public ProjectGenerationResult invokeProjectStructureGeneration(R request) {
+   // 上文已经介绍
+   InitializrMetadata metadata = this.parentApplicationContext.getBean(InitializrMetadataProvider.class).get();
+   try {
+      // 进行转换 
+      ProjectDescription description = this.requestConverter.convert(request, metadata);
+      // 项目生成器
+      /**
+      	1. 生成projectGenerationContext，相当于生成了本次请求的上下文，默认的无参构造器+context.setAllowBeanDefinitionOverriding(false);//不允许覆盖
+      	2. 对projectGenerationContext进行处理
+      	    // 把ApplicationContext父上下文，通用的bean
+      		context.setParent(this.parentApplicationContext);
+      		// 注册InitializrMetadata ,application.yml中属性
+			context.registerBean(InitializrMetadata.class, () -> metadata);
+			// 注册基本信息解析类，解析依赖，解析bom,解析仓库
+			context.registerBean(BuildItemResolver.class, () -> new MetadataBuildItemResolver(metadata, context.getBean(ProjectDescription.class).getPlatformVersion()));
+			// 继承：ProjectDescriptionCustomizer，主要是处理request中路径，包名不规范命名进行统一（转换）
+			context.registerBean(MetadataProjectDescriptionCustomizer.class,
+				() -> new MetadataProjectDescriptionCustomizer(metadata));
+      */
+      ProjectGenerator projectGenerator = new ProjectGenerator((
+            // 处理projectGenerationContext过程
+            projectGenerationContext) -> customizeProjectGenerationContext(projectGenerationContext, metadata));
+      // 开始生成
+      ProjectGenerationResult result = projectGenerator.generate(description,
+            generateProject(description, request));
+      addTempFile(result.getRootDirectory(), result.getRootDirectory());
+      return result;
+   }
+   catch (ProjectGenerationException ex) {
+      publishProjectFailedEvent(request, metadata, ex);
+      throw ex;
+   }
+}
+```
+
+生成文件
+
+```java
+public <T> T generate(ProjectDescription description, ProjectAssetGenerator<T> projectAssetGenerator)
+      throws ProjectGenerationException {
+   // 上文已经介绍，默认的构造器
+   try (ProjectGenerationContext context = this.contextFactory.get()) {
+      // 把生成description的Supplier放入到上下文，并且注入ProjectDescriptionDiffFactory，并执行ProjectDescriptionCustomizer实现类-MetadataProjectDescriptionCustomizer，refresh时执行
+      registerProjectDescription(context, description);
+      // 所有META-INF/spring.factories文件中的ProjectGenerationConfiguration，进行注入BeanDefinition
+      registerProjectContributors(context, description);
+      // 处理context 上文中的2
+      this.contextConsumer.accept(context);
+      // 生成对应的bean ,执行了实现ProjectDescriptionCustomizer接口的customize方法
+      context.refresh();
+      try {
+         // 生成文件
+         return projectAssetGenerator.generate(context);
+      }
+      catch (IOException ex) {
+         throw new ProjectGenerationException("Failed to generate project", ex);
+      }
+   }
+}
+```
+
+生成文件
+
+```java
+// ProjectAssetGenerator 函数式接口
+private ProjectAssetGenerator<ProjectGenerationResult> generateProject(ProjectDescription description, R request) {
+   return (context) -> {
+      // 生成项目目录 ，调用 DefaultProjectAssetGenerator的generate方法
+      Path projectDir = getProjectAssetGenerator(description).generate(context);
+      publishProjectGeneratedEvent(request, context);
+      return new ProjectGenerationResult(context.getBean(ProjectDescription.class), projectDir);
+   };
+}
+```
+
+默认的生成方法
+
+```java
+@Override
+public Path generate(ProjectGenerationContext context) throws IOException {
+   // 得到请求参数
+   ProjectDescription description = context.getBean(ProjectDescription.class);
+   // 创建项目文件,空文件：C:\Users\duanzhiqiang1\AppData\Local\Temp\project-5900421886564624260
+   Path projectRoot = resolveProjectDirectoryFactory(context).createProjectDirectory(description);
+   // 创建项目目录，空文件：C:\Users\duanzhiqiang1\AppData\Local\Temp\project-5900421886564624260\demo
+   Path projectDirectory = initializerProjectDirectory(projectRoot, description);
+   // 排序得到所有的ProjectContributor：
+   // 所有注册的ProjectContributor执行contribute，开始构建项目
+   List<ProjectContributor> contributors = context.getBeanProvider(ProjectContributor.class).orderedStream()
+         .collect(Collectors.toList());
+   for (ProjectContributor contributor : contributors) {
+      contributor.contribute(projectDirectory);
+   }
+   return projectRoot;
+}
+```
+
+注入的例子：
+
+```java
+@ProjectGenerationConfiguration
+public class ApplicationConfigurationProjectGenerationConfiguration {
+
+   @Bean
+   public ApplicationPropertiesContributor applicationPropertiesContributor() {
+      return new ApplicationPropertiesContributor();
+   }
+   // web文件注入
+   // 默认存在，如果依赖存在facet等于web则创建文件目录
+   @Bean
+   public WebFoldersContributor webFoldersContributor(Build build, InitializrMetadata metadata) {
+      return new WebFoldersContributor(build, metadata);
+   }
+
+}
+@Override
+public void contribute(Path projectRoot) throws IOException {
+    if (build){
+        
+    }
+    
+	if (this.buildMetadataResolver.hasFacet(this.build, "web")) {
+		Files.createDirectories(projectRoot.resolve("src/main/resources/templates"));
+		Files.createDirectories(projectRoot.resolve("src/main/resources/static"));
+	}
+}
+```
+
+其他Contributor
+
+--MultipleResourcesProjectContributor：多文件复制，可以增加 可执行文件名称
+
+MavenWrapperContributor继承MultipleResourcesProjectContributor:把目录classpath:maven/wrapper文件复制到项目目录
+
+MavenBuildProjectContributor：创建pom文件，写入pom文件内容。
+
+创建MavenBuild，并放入BuildCustomizer接口的bean,执行BuildCustomizer的customize，然后修改mavenbuild，也就是修改POM格式。
+
+MainApplicationTypeCustomizer：生成main方法，主方法。
+
+TestSourceCodeProjectContributor：测试文件生成。
+
+继承：SingleResourceProjectContributor 单文件处理
+
+ApplicationPropertiesContributor：属性文件复制
+
+HelpDocumentProjectContributor：帮助文档
+
+GitIgnoreContributor：.gitignore文档复制
+
+多配置：
+
+
+
+
+
+
+
+
+
+
 
