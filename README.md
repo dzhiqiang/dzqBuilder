@@ -1098,9 +1098,9 @@ private ProjectAssetGenerator<ProjectGenerationResult> generateProject(ProjectDe
 public Path generate(ProjectGenerationContext context) throws IOException {
    // 得到请求参数
    ProjectDescription description = context.getBean(ProjectDescription.class);
-   // 创建项目文件,空文件：C:\Users\duanzhiqiang1\AppData\Local\Temp\project-5900421886564624260
+   // 创建项目文件,空文件：C:\Users\dzq\AppData\Local\Temp\project-5900421886564624260
    Path projectRoot = resolveProjectDirectoryFactory(context).createProjectDirectory(description);
-   // 创建项目目录，空文件：C:\Users\duanzhiqiang1\AppData\Local\Temp\project-5900421886564624260\demo
+   // 创建项目目录，空文件：C:\Users\dzq\AppData\Local\Temp\project-5900421886564624260\demo
    Path projectDirectory = initializerProjectDirectory(projectRoot, description);
    // 排序得到所有的ProjectContributor：
    // 所有注册的ProjectContributor执行contribute，开始构建项目
