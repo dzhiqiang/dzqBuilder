@@ -846,7 +846,7 @@ public class InitializrAutoConfiguration {
    public ProjectDirectoryFactory projectDirectoryFactory() {
       return (description) -> Files.createTempDirectory("project-");
    }
-   // 生成输出字符流的工厂
+   // 生成带有缩进策略输出字符流的工厂
    @Bean
    @ConditionalOnMissingBean
    public IndentingWriterFactory indentingWriterFactory() {
@@ -1133,10 +1133,6 @@ public class ApplicationConfigurationProjectGenerationConfiguration {
 }
 @Override
 public void contribute(Path projectRoot) throws IOException {
-    if (build){
-        
-    }
-    
 	if (this.buildMetadataResolver.hasFacet(this.build, "web")) {
 		Files.createDirectories(projectRoot.resolve("src/main/resources/templates"));
 		Files.createDirectories(projectRoot.resolve("src/main/resources/static"));
@@ -1166,7 +1162,188 @@ HelpDocumentProjectContributor：帮助文档
 
 GitIgnoreContributor：.gitignore文档复制
 
-多配置：
+#### 其他bean注入
+
+`initializr-generator`项目中的spring.factories文件
+
+> 在组装请求参数的时候进行注入
+
+```properties
+# 不同的构建方式
+io.spring.initializr.generator.buildsystem.BuildSystemFactory=\
+io.spring.initializr.generator.buildsystem.gradle.GradleBuildSystemFactory,\
+io.spring.initializr.generator.buildsystem.maven.MavenBuildSystemFactory
+# 不同的编程语言
+io.spring.initializr.generator.language.LanguageFactory=\
+io.spring.initializr.generator.language.groovy.GroovyLanguageFactory,\
+io.spring.initializr.generator.language.java.JavaLanguageFactory,\
+io.spring.initializr.generator.language.kotlin.KotlinLanguageFactory
+# 不同的打包方式
+io.spring.initializr.generator.packaging.PackagingFactory=\
+io.spring.initializr.generator.packaging.jar.JarPackagingFactory,\
+io.spring.initializr.generator.packaging.war.WarPackagingFactory
+```
+
+`initializr-generator-spring`项目中的spring.factories文件
+
+> 在请求的时候会注入生成Context的时候注入
+
+```properties
+io.spring.initializr.generator.project.ProjectGenerationConfiguration=\
+io.spring.initializr.generator.spring.build.BuildProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.build.gradle.GradleProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.build.maven.MavenProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.code.SourceCodeProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.code.groovy.GroovyProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.code.java.JavaProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.code.kotlin.KotlinProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.configuration.ApplicationConfigurationProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.documentation.HelpDocumentProjectGenerationConfiguration,\
+io.spring.initializr.generator.spring.scm.git.GitProjectGenerationConfiguration
+```
+
+BuildProjectGenerationConfiguration:生成构建的依赖类放值
+
+主要赋值通用的build属性
+
+* junit5依赖的BuildCustomizer
+* junit依赖 junit主要是根据平台版本
+* 默认启动的BuildCustomizer，查看是否存在启动器，如果没有则添加spring-boot-starter
+* 默认的DefaultMavenBuildCustomizer，加入插件，加入java版本，加入描述，加入编码UTF-8
+* WarPackagingWebStarterBuildCustomizer, 如果是war的话，加入tomcat依赖
+* DependencyManagementBuildCustomizer，依赖管理DependencyManagement
+* SimpleBuildCustomizer：加入即将生成项目的GroupId，ArtifactId，Version
+* SpringBootVersionRepositoriesBuildCustomizer：加入仓库
+
+MavenProjectGenerationConfiguration：
+
+* 生成MavenBuild：放入依赖属性值，通过注入的BuildCustomizer放入属性。同时把实现BuildCustomizer接口的类执行赋值到MavenBuild
+* MavenBuildProjectContributor，这个时候MavenBuild属性已经注入完成，然后MavenBuildProjectContributor沟通文件。
+
+SourceCodeProjectGenerationConfiguration：生成使用什么样注解的bean:MainApplicationTypeCustomizer和TestApplicationTypeCustomizer对TypeDeclaration进行操作
+
+* TypeDeclaration写入注解`org.springframework.boot.autoconfigure.SpringBootApplication`
+* TypeDeclaration写入注入使用注解`org.springframework.boot.test.context.SpringBootTest`
+* 如果是war包，//TODO
+
+JavaProjectGenerationConfiguration:生成java类
+
+* 注入bean:MainSourceCodeProjectContributor,负责主函数类生成的ProjectContributor
+
+  处理过程：生成存放类信息的TypeDeclaration,会经过处理注解，main方法。
+
+ApplicationConfigurationProjectGenerationConfiguration：处理复制properties配置文件
+
+* ApplicationPropertiesContributor：从目的配置文件放到目标配置文件
+
+HelpDocumentProjectGenerationConfiguration：帮助文档生成 和这个类似MavenProjectGenerationConfiguration
+
+* 注入HelpDocument：存储所有文档信息，并执行所有实现HelpDocumentCustomizer接口，根据yml配置文件生成对应不同的帮助文档
+* HelpDocumentProjectContributor：帮助文档生成策略
+
+#### start.spring.io ProjectGenerationConfiguration
+
+MavenProjectGenerationConfiguration: 加入maven的帮助文档和MavenBuild加入`spring-boot-maven-plugin`插件
+
+DependencyProjectGenerationConfiguration：1)针对特定的jar包，添加额外的依赖2)针对特定的包也会生成额外的目录3)针对不同的包，增加文档
+
+* 增加额外jar
+
+```java
+@Override
+public void customize(Build build) {
+   if (this.buildResolver.hasFacet(build, "reactive")) {
+      build.dependencies().add("reactor-test", Dependency.withCoordinates("io.projectreactor", "reactor-test")
+            .scope(DependencyScope.TEST_COMPILE));
+   }
+}
+```
+
+* 增加额外文件
+
+```java
+public class FlywayProjectContributor implements ProjectContributor {
+
+   @Override
+   public void contribute(Path projectRoot) throws IOException {
+      Path migrationDirectory = projectRoot.resolve("src/main/resources/db/migration");
+      Files.createDirectories(migrationDirectory);
+   }
+
+}
+```
+
+* 增加文档
+
+```java
+@Bean
+@ConditionalOnRequestedDependency("okta")
+// 注入OktaHelpDocumentCustomizer
+public OktaHelpDocumentCustomizer oktaHelpDocumentCustomizer(MustacheTemplateRenderer templateRenderer) {
+   return new OktaHelpDocumentCustomizer(templateRenderer);
+}
+public class OktaHelpDocumentCustomizer implements HelpDocumentCustomizer {
+   private final MustacheTemplateRenderer templateRenderer;
+   public OktaHelpDocumentCustomizer(MustacheTemplateRenderer templateRenderer) {
+      this.templateRenderer = templateRenderer;
+   }
+   @Override
+   public void customize(HelpDocument document) {
+      // 查找模板okta.mustache
+      document.addSection(new MustacheSection(this.templateRenderer, "okta", Collections.emptyMap()));
+   }
+}
+```
+
+ObservabilityProjectGenerationConfiguration：
+
+* 根据监听其他依赖，添加新的依赖
+
+* 根据不同的包，对测试类增加额外的注解
+
+SolaceProjectGenerationConfiguration：针对`cloud-stream`依赖的特殊处理
+
+SpringAmqpProjectGenerationConfiguration：针对`amqp`依赖的特殊处理
+
+SpringBootProjectGenerationConfiguration：针对`devtools`的特殊处理
+
+SpringCloudProjectGenerationConfiguration：针对SpringCloud的jar包特性处理
+
+SpringDataProjectGenerationConfiguration：
+
+* 针对data-r2dbc依赖处理
+* 增加文档
+
+```java
+// 直接写入内容
+@Override
+public void customize(HelpDocument document) {
+   if (this.build.dependencies().ids().noneMatch(DRIVERS::contains)) {
+      document.addSection((writer) -> {
+         writer.println("## Missing R2DBC Driver");
+         writer.println();
+         writer.println(
+               "Make sure to include a [R2DBC Driver](https://r2dbc.io/drivers/) to connect to your database.");
+      });
+   }
+}
+```
+
+SpringIntegrationProjectGenerationConfiguration：对依赖integration进行处理
+
+SpringNativeProjectGenerationConfiguration：对依赖Native的支持
+
+SpringRestDocsProjectGenerationConfiguration:对依赖restdocs的支持
+
+TestcontainersProjectGenerationConfiguration：对依赖testcontainers支持
+
+VaadinProjectGenerationConfiguration：对依赖vaadin支持
+
+DescriptionProjectGenerationConfiguration：当java版本和平台版本修改时，在帮助文档上显示
+
+
+
+
 
 
 
